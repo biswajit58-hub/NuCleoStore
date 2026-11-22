@@ -1,0 +1,74 @@
+"""High-level file -> DNA -> file operations."""
+
+import hashlib
+from pathlib import Path
+
+from backend.engine.binary_converter import binary_to_bytes
+from backend.engine.dna_encoder import binary_to_dna
+from backend.engine.dna_decoder import dna_to_binary
+from backend.engine import container
+
+
+def sha256_file(path: str | Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def encode_file(source: str | Path, dna_output: str | Path) -> dict:
+    source = Path(source)
+    dna_output = Path(dna_output)
+    payload = source.read_bytes()
+    wrapped = container.pack(payload, source.name)
+    binary = "".join(format(b, "08b") for b in wrapped)
+    dna = binary_to_dna(binary)
+    dna_output.parent.mkdir(parents=True, exist_ok=True)
+    dna_output.write_text(dna, encoding="ascii")
+    return {
+        "source": str(source),
+        "dna_file": str(dna_output),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "source_bytes": len(payload),
+        "dna_length": len(dna),
+    }
+
+
+def decode_file(dna_input: str | Path, reconstructed_output: str | Path,
+                expected_sha256: str | None = None) -> dict:
+    dna_input = Path(dna_input)
+    reconstructed_output = Path(reconstructed_output)
+    dna = dna_input.read_text(encoding="ascii").strip()
+    binary = dna_to_binary(dna)
+    wrapped = binary_to_bytes(binary)
+    parsed = container.unpack(wrapped)
+    reconstructed_output.parent.mkdir(parents=True, exist_ok=True)
+    reconstructed_output.write_bytes(parsed["payload"])
+    actual = parsed["sha256"]
+    if expected_sha256 is not None and actual != expected_sha256:
+        raise IntegrityError(f"SHA-256 mismatch: expected {expected_sha256}, got {actual}")
+    return {
+        "dna_file": str(dna_input),
+        "reconstructed": str(reconstructed_output),
+        "original_filename": parsed["filename"],
+        "sha256": actual,
+        "reconstructed_bytes": len(parsed["payload"]),
+        "dna_length": len(dna),
+    }
+
+
+def decode_dna_bytes_to_file(dna_text: str, output_dir: str | Path) -> dict:
+    binary = dna_to_binary(dna_text.strip())
+    wrapped = binary_to_bytes(binary)
+    parsed = container.unpack(wrapped)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / parsed["filename"]
+    out_path.write_bytes(parsed["payload"])
+    return {
+        "reconstructed": str(out_path),
+        "original_filename": parsed["filename"],
+        "sha256": parsed["sha256"],
+        "reconstructed_bytes": len(parsed["payload"]),
+    }
+
+
+class IntegrityError(Exception):
+    pass

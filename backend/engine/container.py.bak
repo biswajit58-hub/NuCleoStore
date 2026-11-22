@@ -1,0 +1,58 @@
+"""Self-describing DNA container format for NucleoStore."""
+
+import hashlib
+import struct
+
+MAGIC = b"NUCLEO1"
+VERSION = 1
+_HEADER_FIXED = len(MAGIC) + 1 + 4
+_TRAILER_FIXED = 8 + 32
+
+
+class ContainerError(Exception):
+    pass
+
+
+def pack(payload: bytes, filename: str) -> bytes:
+    name_bytes = filename.encode("utf-8")
+    if len(name_bytes) > 0xFFFFFFFF:
+        raise ContainerError("Filename too long")
+    sha = hashlib.sha256(payload).digest()
+    header = (
+        MAGIC
+        + bytes([VERSION])
+        + struct.pack(">I", len(name_bytes))
+        + name_bytes
+        + struct.pack(">Q", len(payload))
+        + sha
+    )
+    return header + payload
+
+
+def is_container(data: bytes) -> bool:
+    return len(data) >= len(MAGIC) and data[:len(MAGIC)] == MAGIC
+
+
+def unpack(data: bytes) -> dict:
+    if not is_container(data):
+        raise ContainerError("Not a NucleoStore .dna file (bad magic)")
+    if len(data) < _HEADER_FIXED:
+        raise ContainerError("Container truncated")
+    version = data[len(MAGIC)]
+    if version != VERSION:
+        raise ContainerError(f"Unsupported container version {version}")
+    (name_len,) = struct.unpack(">I", data[len(MAGIC) + 1 : len(MAGIC) + 5])
+    name_start = _HEADER_FIXED
+    name_end = name_start + name_len
+    if len(data) < name_end + _TRAILER_FIXED:
+        raise ContainerError("Container truncated inside filename/trailer")
+    filename = data[name_start:name_end].decode("utf-8", errors="strict")
+    (payload_size,) = struct.unpack(">Q", data[name_end : name_end + 8])
+    sha = data[name_end + 8 : name_end + 40]
+    payload = data[name_end + 40 :]
+    if len(payload) != payload_size:
+        raise ContainerError(f"Payload size mismatch: header={payload_size} actual={len(payload)}")
+    actual = hashlib.sha256(payload).digest()
+    if actual != sha:
+        raise ContainerError("SHA-256 mismatch in container header")
+    return {"filename": filename, "payload": payload, "sha256": sha.hex()}
